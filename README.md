@@ -4,7 +4,7 @@ The project supports both local and static Netlify deployments.
 
 ## Run locally
 
-On Windows, run `run.bat` and keep its terminal open. Open http://127.0.0.1:8765 in a browser. The local Python service loads the supplied feature CSV, trains the Decision Tree and Random Forest, reports a session-aware holdout evaluation, and classifies simulated windows.
+On Windows, run `run.bat` and keep its terminal open. Open https://ground-pulse.netlify.app/ in a browser. The local Python service loads the supplied feature CSV, trains the Decision Tree and Random Forest, reports a session-aware holdout evaluation, and classifies simulated windows.
 
 ## Deploy to Netlify
 
