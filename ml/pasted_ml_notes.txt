@@ -1,0 +1,132 @@
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+
+from sklearn.model_selection import (
+    train_test_split, StratifiedKFold, GroupKFold,
+    GroupShuffleSplit, cross_val_score
+)
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.metrics import (
+    accuracy_score, classification_report,
+    confusion_matrix, ConfusionMatrixDisplay
+)
+
+SEED = 42
+FEATURES = ["rms", "peak", "dominant_freq", "e_5_50", "e_50_150", "e_150_400"]
+
+# ------------------------------------------------------------------
+# 1. Load data
+#    Optional column "session": an id for each recording session
+#    (e.g. "walk_grass_3m_run1"). If present, train/test are split BY
+#    SESSION so neighbouring windows from one recording never appear
+#    in both sets. This is what keeps the accuracy honest.
+# ------------------------------------------------------------------
+data = pd.read_csv("dataset.csv")
+X = data[FEATURES]
+y = data["label"]
+has_sessions = "session" in data.columns
+groups = data["session"] if has_sessions else None
+
+print("Windows per class:\n", y.value_counts(), "\n")
+print("Duplicate feature rows:", data.duplicated(subset=FEATURES).sum(), "\n")
+
+# ------------------------------------------------------------------
+# 2. Train / test split (session-aware when possible)
+# ------------------------------------------------------------------
+if has_sessions:
+    gss = GroupShuffleSplit(n_splits=1, test_size=0.25, random_state=SEED)
+    train_idx, test_idx = next(gss.split(X, y, groups))
+    X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
+    y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
+else:
+    print("WARNING: no 'session' column, using a random stratified split. "
+          "Results may be optimistic.\n")
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.25, stratify=y, random_state=SEED
+    )
+
+# ------------------------------------------------------------------
+# 3. Models (kept small and regularised to avoid memorising noise)
+# ------------------------------------------------------------------
+models = {
+    "Decision Tree": DecisionTreeClassifier(
+        max_depth=4, min_samples_leaf=5, random_state=SEED
+    ),
+    "Random Forest": RandomForestClassifier(
+        n_estimators=100, max_depth=5, min_samples_leaf=3,
+        random_state=SEED
+    ),
+}
+
+fig, axes = plt.subplots(1, len(models), figsize=(11, 4.5))
+
+for ax, (name, model) in zip(np.atleast_1d(axes), models.items()):
+    model.fit(X_train, y_train)
+    y_pred = model.predict(X_test)
+
+    train_acc = accuracy_score(y_train, model.predict(X_train))
+    test_acc = accuracy_score(y_test, y_pred)
+
+    print("=" * 60)
+    print(name)
+    print(f"Train accuracy: {train_acc:.3f}")
+    print(f"Test accuracy : {test_acc:.3f}  (n_test = {len(y_test)})")
+    print(f"Train-test gap: {train_acc - test_acc:.3f}  (large gap = overfitting)")
+    print("\nClassification report:")
+    print(classification_report(y_test, y_pred, zero_division=0))
+
+    cm = confusion_matrix(y_test, y_pred, labels=sorted(y.unique()))
+    ConfusionMatrixDisplay(cm, display_labels=sorted(y.unique())).plot(
+        ax=ax, colorbar=False, cmap="Blues"
+    )
+    ax.set_title(name)
+
+plt.tight_layout()
+plt.savefig("confusion_matrices.png", dpi=200)
+plt.show()
+
+# ------------------------------------------------------------------
+# 4. Cross-validation: mean +/- std over many folds
+# ------------------------------------------------------------------
+print("=" * 60)
+print("Cross-validation (more reliable than one split)")
+
+if has_sessions:
+    n_groups = groups.nunique()
+    cv = GroupKFold(n_splits=min(5, n_groups))
+    cv_args = dict(groups=groups)
+else:
+    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=SEED)
+    cv_args = {}
+
+for name, model in models.items():
+    scores = cross_val_score(model, X, y, cv=cv, scoring="accuracy", **cv_args)
+    print(f"{name}: {scores.mean():.3f} +/- {scores.std():.3f}  "
+          f"(folds: {np.round(scores, 3)})")
+
+# ------------------------------------------------------------------
+# 5. Sanity check: shuffled labels should give ~chance accuracy
+#    (4 balanced classes -> about 0.25). If not, there is leakage.
+# ------------------------------------------------------------------
+rng = np.random.default_rng(SEED)
+y_shuffled = pd.Series(rng.permutation(y.values), index=y.index)
+chance = cross_val_score(
+    models["Random Forest"], X, y_shuffled,
+    cv=StratifiedKFold(5, shuffle=True, random_state=SEED)
+)
+print(f"\nShuffled-label check (expect ~0.25): {chance.mean():.3f}")
+
+# ------------------------------------------------------------------
+# 6. Feature importance (Random Forest)
+# ------------------------------------------------------------------
+rf = models["Random Forest"]
+imp = pd.Series(rf.feature_importances_, index=FEATURES).sort_values()
+plt.figure(figsize=(6, 3.5))
+imp.plot(kind="barh", color="steelblue")
+plt.xlabel("Importance")
+plt.title("Random Forest feature importance")
+plt.tight_layout()
+plt.savefig("feature_importance.png", dpi=200)
+plt.show()
